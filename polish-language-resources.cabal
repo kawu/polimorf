@@ -1,0 +1,15 @@
+Name:               polish-language-resources
+Version:            0.0.1
+Synopsis:           Handling of various polish language resources.
+License:            BSD3
+License-file:       LICENSE
+Author:             Jakub Waszczuk
+Maintainer:         waszczuk.kuba@gmail.com
+Build-type:         Simple
+Exposed-modules:    Text.PoliMorf
+                  , Text.LMF.Named
+                  , Text.LMF.Hist
+Build-Depends:      base
+                  , split
+                  , text
+		  , polysoup
