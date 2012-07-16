@@ -7,6 +7,7 @@ Author:             Jakub Waszczuk
 Maintainer:         waszczuk.kuba@gmail.com
 Build-type:         Simple
 Exposed-modules:    Text.PoliMorf
+                  , Text.Prolexbase
                   , Text.LMF.Named
                   , Text.LMF.Hist
 Build-Depends:      base
