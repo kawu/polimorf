@@ -10,7 +10,10 @@ Exposed-modules:    Text.PoliMorf
                   , Text.Prolexbase
                   , Text.LMF.Named
                   , Text.LMF.Hist
+                  , Data.PoliMorf
 Build-Depends:      base
                   , split
                   , text
 		  , polysoup
+		  , binary
+		  , containers
