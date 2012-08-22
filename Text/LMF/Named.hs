@@ -33,4 +33,4 @@ featP :: String -> XmlParser String T.Text
 featP att = T.pack <$> cut (tag "feat" *> hasAttr "att" att *> getAttr "val")
 
 parseNamed :: String -> [Entry]
-parseNamed = parseXML lmfP
+parseNamed = parseXml lmfP

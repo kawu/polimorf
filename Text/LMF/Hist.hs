@@ -36,4 +36,4 @@ featP :: String -> XmlParser String String
 featP att = cut (tag "feat" *> hasAttr "att" att *> getAttr "val")
 
 parseHist :: String -> [Entry]
-parseHist = parseXML lmfP
+parseHist = parseXml lmfP
