@@ -28,7 +28,6 @@ module Data.PoliMorf
 import Control.Applicative ((<$>), (<*>))
 import Data.Monoid (Monoid, mappend)
 import Data.List (foldl')
-import Data.Maybe (maybeToList)
 import Data.Binary (Binary, get, put)
 import qualified Data.Map as M
 import qualified Data.Set as S
@@ -68,11 +67,11 @@ parsePoliRow row = case map L.toStrict (L.split (=='\t') row) of
 
 -- | A map from forms to their possible base forms (there may be many since
 -- the form may be a member of multiple lexemes).
-type BaseMap = M.Map Form [Base]
+type BaseMap = M.Map Form (S.Set Base)
 
 -- | Make the base map from the list of entries.
 mkBaseMap :: [Entry] -> BaseMap
-mkBaseMap = M.fromListWith (++) . map ((,) <$> form <*> (:[]) . base)
+mkBaseMap = M.fromListWith S.union . map ((,) <$> form <*> S.singleton . base)
 
 -- | Reliability information: how did we assign a particular label to
 -- a particular word form.
@@ -126,23 +125,25 @@ merge poli dict0 =
     dict1 = fromListWith mappend
         [ (lemma, x)
         | (_form, x) <- M.assocs dict0
-        , lemmas <- maybeToList (_form `M.lookup` poli)
-        , lemma <- lemmas ]
+        , lemma <- elemsOn poli _form ]
 
     -- Extended to all forms of dict0 keys.
     dict2 = fromListWith mappend
         [ (form', x)
         | (_form, x) <- M.assocs dict0
-        , lemmas <- maybeToList (_form `M.lookup` poli)
-        , lemma  <- lemmas
-        , forms' <- maybeToList (lemma `M.lookup` ilop)
-        , form'  <- forms' ]
+        , lemma <- elemsOn poli _form
+        , form' <- elemsOn ilop lemma ]
 
     -- Inverse poli dictionary.
-    ilop = fmap S.toList $ fromListWith mappend
+    ilop = fromListWith mappend
         [ (lemma, S.singleton _form)
         | (_form, lemmas) <- M.assocs poli
-        , lemma <- lemmas ]
+        , lemma <- S.toList lemmas ]
+
+elemsOn :: (Ord a, Ord b) => M.Map a (S.Set b) -> a -> [b]
+elemsOn m x = case x `M.lookup` m of
+    Just s  -> S.toList s
+    Nothing -> []
 
 fromListWith :: Ord k => (a -> a -> a) -> [(k, a)] -> M.Map k a
 fromListWith f xs =
