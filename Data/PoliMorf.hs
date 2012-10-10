@@ -50,6 +50,7 @@ data Entry = Entry
     { form :: !Form
     , base :: !Base
     , tag  :: !Tag }
+    deriving (Eq, Ord, Show, Read)
 
 -- | Read the PoliMorf from the file.
 readPoliMorf :: FilePath -> IO [Entry]
