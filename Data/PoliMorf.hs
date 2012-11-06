@@ -22,6 +22,7 @@ module Data.PoliMorf
 , BaseMap
 , mkBaseMap
 , RelCode (..)
+, Origin (..)
 , merge
 ) where
 
@@ -45,11 +46,15 @@ type Base = T.Text
 -- | A morphosyntactic tag.
 type Tag  = T.Text
 
+-- | A category.
+type Cat  = T.Text
+
 -- | An entry from the PoliMorf dictionary.
 data Entry = Entry
     { form :: !Form
     , base :: !Base
-    , tag  :: !Tag }
+    , tag  :: !Tag
+    , cat  :: !Cat }
     deriving (Eq, Ord, Show, Read)
 
 -- | Read the PoliMorf from the file.
@@ -63,7 +68,7 @@ parsePoliMorf = map parsePoliRow . L.lines
 -- | Get an entry pair from a PoliMorf row.
 parsePoliRow :: L.Text -> Entry
 parsePoliRow row = case map L.toStrict (L.split (=='\t') row) of
-    [_form, _base, _tag] -> Entry _form _base _tag
+    [_form, _base, _tag, _cat] -> Entry _form _base _tag _cat
     _   -> error $ "parsePoliRow: invalid row \"" ++ L.unpack row ++ "\""
 
 -- | A map from forms to their possible base forms (there may be many since
@@ -92,6 +97,12 @@ instance Binary RelCode where
         '3' -> ByForm
         c   -> error $ "get: invalid RelCode code '" ++ [c] ++ "'"
 
+-- | Origin of the form.
+data Origin
+    = Poli  -- ^ From polimorf
+    | Dict  -- ^ From labeled dictionary
+    | Both  -- ^ From both
+
 -- | Merge the 'BaseMap' with the dictionary resource which maps forms to
 -- sets of labels.  Every label is assigned a 'RelCode' which tells what
 -- is the relation between the label and the form.  There are three
@@ -107,12 +118,23 @@ instance Binary RelCode where
 merge
     :: Ord a => BaseMap
     -> M.Map Form (S.Set a)
-    -> M.Map Form (M.Map a RelCode)
-merge poli dict0 =
-    M.fromList [(x, combine x) | x <- keys]
+    -> M.Map Form (Origin, M.Map a RelCode)
+merge poli dict0 = M.fromList
+    [ (x, (origin x, combine x))
+    | x <- keys ]
   where
     -- Keys in the output dictionary.
-    keys = S.toList (M.keysSet poli `S.union` M.keysSet dict0)
+    poliKeys = M.keysSet poli
+    dictKeys = M.keysSet dict0
+    keys = S.toList (poliKeys `S.union` dictKeys)
+
+    origin x
+        | inPoli && inDict  = Both
+        | inPoli            = Poli
+        | otherwise         = Dict
+      where
+        inPoli = S.member x poliKeys
+        inDict = S.member x dictKeys
 
     -- Combining function.
     combine x = (M.unionsWith min . catMaybes)
