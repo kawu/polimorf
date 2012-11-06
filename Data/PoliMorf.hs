@@ -26,7 +26,8 @@ module Data.PoliMorf
 ) where
 
 import Control.Applicative ((<$>), (<*>))
-import Data.Monoid (Monoid, mappend)
+import Data.Maybe (catMaybes)
+import Data.Monoid (mappend)
 import Data.List (foldl')
 import Data.Binary (Binary, get, put)
 import qualified Data.Map as M
@@ -92,22 +93,21 @@ instance Binary RelCode where
         c   -> error $ "get: invalid RelCode code '" ++ [c] ++ "'"
 
 -- | Merge the 'BaseMap' with the dictionary resource which maps forms to
--- monoidal labels.  Depending on the inference technique there are three
--- kinds of labels in the resultant dictionary:
+-- sets of labels.  Every label is assigned a 'RelCode' which tells what
+-- is the relation between the label and the form.  There are three
+-- kinds of labels:
 -- 'Exact' labels assigned in a direct manner, 'ByBase' labels assigned
 -- to all forms which have a base form with a label in the input dictionary,
 -- and 'ByForm' labels assigned to all forms which have a related form from the
 -- same lexeme with a label in the input dictionary.
 --
--- For a particular form in the output dictionary there are labels extracted
--- with at most one of the methods described above, with 'Exact' labels
--- having a precedence over 'ByBase' labels and 'ByBase' labels having
--- a precedence over 'ByForm' labels.
---
 -- This function is far from being memory efficient right now.  If you plan to
 -- run it with respect to the entire PoliMorf dictionary you should do it
 -- on a machine with an abundance of available memory.
-merge :: Monoid m => BaseMap -> M.Map Form m -> M.Map Form (Maybe (m, RelCode))
+merge
+    :: Ord a => BaseMap
+    -> M.Map Form (S.Set a)
+    -> M.Map Form (M.Map a RelCode)
 merge poli dict0 =
     M.fromList [(x, combine x) | x <- keys]
   where
@@ -115,11 +115,13 @@ merge poli dict0 =
     keys = S.toList (M.keysSet poli `S.union` M.keysSet dict0)
 
     -- Combining function.
-    combine x
-        | Just y <- M.lookup x dict0 = Just (y, Exact)
-        | Just y <- M.lookup x dict1 = Just (y, ByBase)
-        | Just y <- M.lookup x dict2 = Just (y, ByForm)
-        | otherwise = Nothing
+    combine x = (M.unionsWith min . catMaybes)
+        [ label Exact  <$> M.lookup x dict0 
+        , label ByBase <$> M.lookup x dict1
+        , label ByForm <$> M.lookup x dict2 ]
+
+    label :: Ord a => RelCode -> S.Set a -> M.Map a RelCode
+    label code s = M.fromList [(x, code) | x <- S.toList s]
 
     -- Extended to all base forms of dict0 keys.
     dict1 = fromListWith mappend
