@@ -22,7 +22,6 @@ module Data.PoliMorf
 , BaseMap
 , mkBaseMap
 , RelCode (..)
-, Origin (..)
 , merge
 ) where
 
@@ -97,12 +96,6 @@ instance Binary RelCode where
         '3' -> ByForm
         c   -> error $ "get: invalid RelCode code '" ++ [c] ++ "'"
 
--- | Origin of the form.
-data Origin
-    = Poli  -- ^ From polimorf
-    | Dict  -- ^ From labeled dictionary
-    | Both  -- ^ From both
-
 -- | Merge the 'BaseMap' with the dictionary resource which maps forms to
 -- sets of labels.  Every label is assigned a 'RelCode' which tells what
 -- is the relation between the label and the form.  There are three
@@ -118,23 +111,13 @@ data Origin
 merge
     :: Ord a => BaseMap
     -> M.Map Form (S.Set a)
-    -> M.Map Form (Origin, M.Map a RelCode)
+    -> M.Map Form (M.Map a RelCode)
 merge poli dict0 = M.fromList
-    [ (x, (origin x, combine x))
+    [ (x, combine x)
     | x <- keys ]
   where
     -- Keys in the output dictionary.
-    poliKeys = M.keysSet poli
-    dictKeys = M.keysSet dict0
-    keys = S.toList (poliKeys `S.union` dictKeys)
-
-    origin x
-        | inPoli && inDict  = Both
-        | inPoli            = Poli
-        | otherwise         = Dict
-      where
-        inPoli = S.member x poliKeys
-        inDict = S.member x dictKeys
+    keys = S.toList (M.keysSet poli `S.union` M.keysSet dict0)
 
     -- Combining function.
     combine x = (M.unionsWith min . catMaybes)
