@@ -31,4 +31,4 @@ library
 
 source-repository head
     type: git
-    location: git://github.com/kawu/polimorf.git
+    location: https://github.com/kawu/polimorf.git
