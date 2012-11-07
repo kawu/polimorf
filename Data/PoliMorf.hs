@@ -12,6 +12,7 @@ module Data.PoliMorf
   Form
 , Base
 , Tag
+, Cat
 , Entry (..)
 
 -- * Parsing
