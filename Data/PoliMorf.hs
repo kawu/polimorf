@@ -39,7 +39,7 @@ import qualified Data.Set as S
 import qualified Data.Text as T
 import qualified Data.Text.Lazy as L
 import qualified Data.Text.Lazy.IO as L
-import qualified Data.DAWG.Wrapper as D
+import qualified Data.DAWG as D
 
 import Debug.Trace (trace)
 
