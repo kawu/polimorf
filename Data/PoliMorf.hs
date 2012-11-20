@@ -25,20 +25,21 @@ module Data.PoliMorf
 , Rule (..)
 , apply
 , toBase
--- , BaseMap
 , mkRuleMap
+, BaseMap
 , mkBaseMap
-, mkGenMap
--- , RelCode (..)
--- , merge
+, FormMap
+, mkFormMap
+, RelCode (..)
+, merge
 ) where
 
 import Control.Applicative ((<$>), (<*>))
 import Data.Maybe (catMaybes)
 import Data.Monoid (mappend)
-import Data.List (foldl')
 import Data.Binary (Binary, get, put)
 import qualified Data.Set as S
+import qualified Data.Map as M
 import qualified Data.Text as T
 import qualified Data.Text.Lazy as L
 import qualified Data.Text.Lazy.IO as L
@@ -122,9 +123,12 @@ between source dest =
         Just (c, _, _)  -> T.length c
         Nothing         -> 0
 
--- -- | A map from forms to their possible base forms (there may be many since
--- -- the form may be a member of multiple lexemes).
--- type BaseMap = D.DAWG (S.Set Rule)
+-- | A map from forms to their possible base forms (there may be many since
+-- the form may be a member of multiple lexemes).
+type BaseMap = D.DAWG (S.Set Rule)
+
+-- | A map from base forms to all their potential forms.
+type FormMap = D.DAWG (S.Set Rule)
 
 -- | Make the rule map from a list of entries.
 mkRuleMap :: [(T.Text, T.Text)] -> D.DAWG (S.Set Rule)
@@ -133,11 +137,14 @@ mkRuleMap xs = D.fromListWith S.union $
       , S.singleton (between x y) )
     | (x, y) <- xs ]
 
-mkBaseMap :: [Entry] -> D.DAWG (S.Set Rule)
+-- | Make a DAWG from forms to their possible base forms (there may be many since
+-- the form may be a member of multiple lexemes).
+mkBaseMap :: [Entry] -> BaseMap
 mkBaseMap = mkRuleMap . map ((,) <$> form <*> base)
 
-mkGenMap :: [Entry] -> D.DAWG (S.Set Rule)
-mkGenMap = mkRuleMap . map ((,) <$> base <*> form)
+-- | Make a DAWG from base forms to their potential forms.
+mkFormMap :: [Entry] -> FormMap
+mkFormMap = mkRuleMap . map ((,) <$> base <*> form)
 
 -- | Reliability information: how did we assign a particular label to
 -- a particular word form.
@@ -165,55 +172,57 @@ instance Binary RelCode where
 -- to all forms which have a base form with a label in the input dictionary,
 -- and 'ByForm' labels assigned to all forms which have a related form from the
 -- same lexeme with a label in the input dictionary.
---
--- This function is far from being memory efficient right now.  If you plan to
--- run it with respect to the entire PoliMorf dictionary you should do it
--- on a machine with an abundance of available memory.
--- merge
---     :: Ord a => BaseMap
---     -> D.DAWG (S.Set a)
---     -> D.DAWG (M.Map a RelCode)
--- merge poli dict0 = M.fromList
---     [ (x, combine x)
---     | x <- keys ]
---   where
---     -- Keys in the output dictionary.
---     keys = S.toList (M.keysSet poli `S.union` M.keysSet dict0)
--- 
---     -- Combining function.
---     combine x = (M.unionsWith min . catMaybes)
---         [ label Exact  <$> M.lookup x dict0 
---         , label ByBase <$> M.lookup x dict1
---         , label ByForm <$> M.lookup x dict2 ]
--- 
---     label :: Ord a => RelCode -> S.Set a -> M.Map a RelCode
---     label code s = M.fromList [(x, code) | x <- S.toList s]
--- 
---     -- Extended to all base forms of dict0 keys.
---     dict1 = fromListWith mappend
---         [ (lemma, x)
---         | (_form, x) <- M.assocs dict0
---         , lemma <- elemsOn poli _form ]
--- 
---     -- Extended to all forms of dict0 keys.
---     dict2 = fromListWith mappend
---         [ (form', x)
---         | (_form, x) <- M.assocs dict0
---         , lemma <- elemsOn poli _form
---         , form' <- elemsOn ilop lemma ]
--- 
---     -- Inverse poli dictionary.
---     ilop = fromListWith mappend
---         [ (lemma, S.singleton _form)
---         | (_form, lemmas) <- M.assocs poli
---         , lemma <- S.toList lemmas ]
--- 
--- elemsOn :: Ord b => D.DAWG (S.Set b) -> String -> [b]
--- elemsOn m x = case x `D.lookup` m of
---     Just s  -> S.toList s
---     Nothing -> []
--- 
--- fromListWith :: Ord k => (a -> a -> a) -> [(k, a)] -> M.Map k a
--- fromListWith f xs =
---     let update m (!k, !x) = M.insertWith' f k x m
---     in  foldl' update M.empty xs
+merge
+    :: Ord a => BaseMap
+    -> D.DAWG (S.Set a)
+    -> D.DAWG (M.Map a RelCode)
+merge poli dict0 = D.fromList
+    [ (x, combine x)
+    | x <- keys ]
+  where
+    -- Keys in the output dictionary.
+    keys = join (D.keys poli) (D.keys dict0)
+
+    -- Combining function.
+    combine x = (M.unionsWith min . catMaybes)
+        [ label Exact  <$> D.lookup x dict0 
+        , label ByBase <$> D.lookup x dict1
+        , label ByForm <$> D.lookup x dict2 ]
+
+    label :: Ord a => RelCode -> S.Set a -> M.Map a RelCode
+    label code s = M.fromList [(x, code) | x <- S.toList s]
+
+    -- Extended to all base forms of dict0 keys.
+    dict1 = D.fromListWith mappend
+        [ (lemma, x)
+        | (_form, x) <- D.assocs dict0
+        , lemma <- elemsOn poli _form ]
+
+    -- Extended to all forms of dict0 keys.
+    dict2 = D.fromListWith mappend
+        [ (form', x)
+        | (_form, x) <- D.assocs dict0
+        , lemma <- elemsOn poli _form
+        , form' <- elemsOn ilop lemma ]
+
+    -- Inverse poli dictionary.
+    ilop = mkRuleMap
+        [ (base'Text, form'Text)
+        | (form'String, rules) <- D.assocs poli
+        , rule <- S.toList rules
+        , let form'Text = T.pack form'String
+        , let base'Text = apply rule form'Text ]
+    
+    join (x:xs) (y:ys)
+        | x < y     = x : join xs (y:ys)
+        | x > y     = y : join (x:xs) ys
+        | otherwise = x : join xs ys
+    join xs []  = xs
+    join [] ys  = ys
+
+elemsOn :: D.DAWG (S.Set Rule) -> String -> [String]
+elemsOn m x = case x `D.lookup` m of
+    Just s  ->
+        [ T.unpack . apply rule . T.pack $ x
+        | rule <- S.toList s ]
+    Nothing -> []
