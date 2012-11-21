@@ -31,6 +31,7 @@ module Data.PoliMorf
 , FormMap
 , mkFormMap
 , RelCode (..)
+, mergeWith
 , merge
 ) where
 
@@ -113,7 +114,7 @@ toBase x
         Just (c, _, _)  -> T.length c
         Nothing         -> trace (show (form x, base x)) 0
 
--- | Make a rule to trasnalte between two strings.
+-- | Make a rule to translate between two strings.
 between :: T.Text -> T.Text -> Rule
 between source dest =
     let k = lcp source dest
@@ -137,8 +138,8 @@ mkRuleMap xs = D.fromListWith S.union $
       , S.singleton (between x y) )
     | (x, y) <- xs ]
 
--- | Make a DAWG from forms to their possible base forms (there may be many since
--- the form may be a member of multiple lexemes).
+-- | Make a DAWG from forms to their possible base forms (there may be many
+-- since the form may be a member of multiple lexemes).
 mkBaseMap :: [Entry] -> BaseMap
 mkBaseMap = mkRuleMap . map ((,) <$> form <*> base)
 
@@ -149,14 +150,14 @@ mkFormMap = mkRuleMap . map ((,) <$> base <*> form)
 -- | Reliability information: how did we assign a particular label to
 -- a particular word form.
 data RelCode
-    = Exact     -- ^ Label assigned in a direct manner
+    = ByForm    -- ^ Based on labels of other forms within the same lexeme
     | ByBase    -- ^ Label assigned based on a lemma label  
-    | ByForm    -- ^ Based on labels of other forms within the same lexeme
+    | Exact     -- ^ Label assigned in a direct manner
     deriving (Eq, Ord, Show, Read)
 
 instance Binary RelCode where
     put Exact   = put '1'
-    put ByBase = put '2'
+    put ByBase  = put '2'
     put ByForm  = put '3'
     get = get >>= \x -> return $ case x of
         '1' -> Exact
@@ -164,19 +165,24 @@ instance Binary RelCode where
         '3' -> ByForm
         c   -> error $ "get: invalid RelCode code '" ++ [c] ++ "'"
 
--- | Merge the 'BaseMap' with the dictionary resource which maps forms to
--- sets of labels.  Every label is assigned a 'RelCode' which tells what
--- is the relation between the label and the form.  There are three
--- kinds of labels:
+-- | Merge the map from forms to their potential base forms with the dictionary
+-- resource which maps forms to sets of labels.  Every label is assigned
+-- a 'RelCode' which tells what is the relation between the label and the form.
+-- It is a generalized version of the 'merge' function with additional
+-- function @f x y y'label@ which can be used to determine the resultant
+-- set of labels for the form @x@ given ,,similar'' form @y@ and its
+-- original label @y'label@.  There are three kinds of labels:
 -- 'Exact' labels assigned in a direct manner, 'ByBase' labels assigned
 -- to all forms which have a base form with a label in the input dictionary,
 -- and 'ByForm' labels assigned to all forms which have a related form from the
 -- same lexeme with a label in the input dictionary.
-merge
-    :: Ord a => BaseMap
+mergeWith
+    :: Ord a
+    => (String -> String -> a -> a)
+    -> BaseMap
     -> D.DAWG (S.Set a)
     -> D.DAWG (M.Map a RelCode)
-merge poli dict0 = D.fromList
+mergeWith f poli dict0 = D.fromList
     [ (x, combine x)
     | x <- keys ]
   where
@@ -184,7 +190,7 @@ merge poli dict0 = D.fromList
     keys = join (D.keys poli) (D.keys dict0)
 
     -- Combining function.
-    combine x = (M.unionsWith min . catMaybes)
+    combine x = (M.unionsWith max . catMaybes)
         [ label Exact  <$> D.lookup x dict0 
         , label ByBase <$> D.lookup x dict1
         , label ByForm <$> D.lookup x dict2 ]
@@ -194,13 +200,13 @@ merge poli dict0 = D.fromList
 
     -- Extended to all base forms of dict0 keys.
     dict1 = D.fromListWith mappend
-        [ (lemma, x)
+        [ (lemma, f'Set lemma _form x)
         | (_form, x) <- D.assocs dict0
         , lemma <- elemsOn poli _form ]
 
     -- Extended to all forms of dict0 keys.
     dict2 = D.fromListWith mappend
-        [ (form', x)
+        [ (form', f'Set form' _form x)
         | (_form, x) <- D.assocs dict0
         , lemma <- elemsOn poli _form
         , form' <- elemsOn ilop lemma ]
@@ -213,12 +219,24 @@ merge poli dict0 = D.fromList
         , let form'Text = T.pack form'String
         , let base'Text = apply rule form'Text ]
     
+    -- Merge to ascending lists.
     join (x:xs) (y:ys)
         | x < y     = x : join xs (y:ys)
         | x > y     = y : join (x:xs) ys
         | otherwise = x : join xs ys
     join xs []  = xs
     join [] ys  = ys
+
+    -- Version of f function working on label sets.
+    f'Set v w = S.fromList . map (f v w) . S.toList
+
+-- | A specialized version of the 'mergeWith' function which doesn't
+-- change labels in the resultant 'D.DAWG'.
+merge
+    :: Ord a => BaseMap
+    -> D.DAWG (S.Set a)
+    -> D.DAWG (M.Map a RelCode)
+merge = mergeWith $ \_ _ x -> x
 
 elemsOn :: D.DAWG (S.Set Rule) -> String -> [String]
 elemsOn m x = case x `D.lookup` m of
