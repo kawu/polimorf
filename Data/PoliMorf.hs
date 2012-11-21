@@ -68,7 +68,9 @@ data Entry = Entry
     , cat  :: !Cat }
     deriving (Eq, Ord, Show, Read)
 
--- | Is the entry an atomic one?
+-- | Is the entry an atomic one?  More precisely, we treat all negative
+-- forms starting with ''nie'' and all superlatives starting with ''naj''
+-- as non-atomic entries.
 atomic :: Entry -> Bool
 atomic x
     | "sup" `T.isInfixOf` tag x && "naj" `T.isPrefixOf` form x = False
@@ -89,7 +91,7 @@ parsePoliRow row = case map L.toStrict (L.split (=='\t') row) of
     [_form, _base, _tag, _cat] -> Entry _form _base _tag _cat
     _   -> error $ "parsePoliRow: invalid row \"" ++ L.unpack row ++ "\""
 
--- | A rule for translating a form into other form (presumably lemma).
+-- | A rule for translating a form into another one.
 data Rule = Rule {
     -- | Number of characters to cut from the end of the form.
       cut       :: !Int
@@ -101,7 +103,7 @@ data Rule = Rule {
 apply :: Rule -> T.Text -> T.Text
 apply r x = T.take (T.length x - cut r) x `T.append` suffix r
 
--- | Determine the rule needed to translate the form to its base form.
+-- | Determine the rule needed to translate the form into its base form.
 toBase :: Entry -> Maybe Rule
 toBase x
     | "sup" `T.isInfixOf` tag x && "naj" `T.isPrefixOf` form x = Nothing
@@ -131,19 +133,18 @@ type BaseMap = D.DAWG (S.Set Rule)
 -- | A map from base forms to all their potential forms.
 type FormMap = D.DAWG (S.Set Rule)
 
--- | Make the rule map from a list of entries.
+-- | Make a rule map from a list of entries.
 mkRuleMap :: [(T.Text, T.Text)] -> D.DAWG (S.Set Rule)
 mkRuleMap xs = D.fromListWith S.union $
     [ ( T.unpack x
       , S.singleton (between x y) )
     | (x, y) <- xs ]
 
--- | Make a DAWG from forms to their possible base forms (there may be many
--- since the form may be a member of multiple lexemes).
+-- | Make a 'BaseMap' from a list of entries.
 mkBaseMap :: [Entry] -> BaseMap
 mkBaseMap = mkRuleMap . map ((,) <$> form <*> base)
 
--- | Make a DAWG from base forms to their potential forms.
+-- | Make a 'FormMap' from a list of entries.
 mkFormMap :: [Entry] -> FormMap
 mkFormMap = mkRuleMap . map ((,) <$> base <*> form)
 
@@ -165,13 +166,13 @@ instance Binary RelCode where
         '3' -> ByForm
         c   -> error $ "get: invalid RelCode code '" ++ [c] ++ "'"
 
--- | Merge the map from forms to their potential base forms with the dictionary
--- resource which maps forms to sets of labels.  Every label is assigned
--- a 'RelCode' which tells what is the relation between the label and the form.
--- It is a generalized version of the 'merge' function with additional
--- function @f x y y'label@ which can be used to determine the resultant
--- set of labels for the form @x@ given ,,similar'' form @y@ and its
--- original label @y'label@.  There are three kinds of labels:
+-- | Merge the 'BaseMap' with the dictionary resource which maps forms to sets
+-- of labels.  Every label is assigned a 'RelCode' which tells what is the
+-- relation between the label and the form. It is a generalized version
+-- of the 'merge' function with additional function @f x y y'label@ which
+-- can be used to determine the resultant set of labels for the form @x@
+-- given ,,similar'' form @y@ and its original label @y'label@.
+-- There are three kinds of labels:
 -- 'Exact' labels assigned in a direct manner, 'ByBase' labels assigned
 -- to all forms which have a base form with a label in the input dictionary,
 -- and 'ByForm' labels assigned to all forms which have a related form from the
