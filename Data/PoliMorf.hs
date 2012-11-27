@@ -1,6 +1,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternGuards #-}
 {-# LANGUAGE BangPatterns #-}
+{-# LANGUAGE RecordWildCards #-}
 
 -- | The module provides functionality for manipulating PoliMorf, the
 -- morphological dictionary for Polish. Apart from IO utilities there
@@ -21,32 +22,37 @@ module Data.PoliMorf
 , readPoliMorf
 , parsePoliMorf
 
--- * Merging
+-- * Utilities
 , Rule (..)
 , apply
-, toBase
+, DAWG
+, AnaMap
+, mkAnaMap
+, anaWord
 , mkRuleMap
 , BaseMap
 , mkBaseMap
 , FormMap
 , mkFormMap
-, RelCode (..)
-, mergeWith
-, merge
+
+-- -- * Merging
+-- , RelCode (..)
+-- , mergeWith
+-- , merge
 ) where
 
 import Control.Applicative ((<$>), (<*>))
-import Data.Maybe (catMaybes)
-import Data.Monoid (mappend)
+-- import Data.Maybe (catMaybes)
+-- import Data.Monoid (mappend)
 import Data.Binary (Binary, get, put)
+import Data.Text.Binary ()
 import qualified Data.Set as S
 import qualified Data.Map as M
 import qualified Data.Text as T
 import qualified Data.Text.Lazy as L
 import qualified Data.Text.Lazy.IO as L
-import qualified Data.DAWG as D
-
-import Debug.Trace (trace)
+import qualified Data.DAWG.Static as D
+import qualified Data.DAWG.Trans.Vector as D
 
 -- | A form.
 type Form = T.Text
@@ -99,22 +105,13 @@ data Rule = Rule {
     , suffix    :: !T.Text }
     deriving (Show, Eq, Ord)
 
+instance Binary Rule where
+    put Rule{..} = put cut >> put suffix
+    get = Rule <$> get <*> get
+
 -- | Apply the rule.
 apply :: Rule -> T.Text -> T.Text
 apply r x = T.take (T.length x - cut r) x `T.append` suffix r
-
--- | Determine the rule needed to translate the form into its base form.
-toBase :: Entry -> Maybe Rule
-toBase x
-    | "sup" `T.isInfixOf` tag x && "naj" `T.isPrefixOf` form x = Nothing
-    | "neg" `T.isInfixOf` tag x && "nie" `T.isPrefixOf` form x = Nothing
-    | otherwise =
-        let k = lcp (form x) (base x)
-        in  Just $ Rule (T.length (form x) - k) (T.drop k (base x))
-  where
-    lcp a b = case T.commonPrefixes a b of
-        Just (c, _, _)  -> T.length c
-        Nothing         -> trace (show (form x, base x)) 0
 
 -- | Make a rule to translate between two strings.
 between :: T.Text -> T.Text -> Rule
@@ -126,15 +123,39 @@ between source dest =
         Just (c, _, _)  -> T.length c
         Nothing         -> 0
 
+type DAWG a = D.DAWG D.Trans Char () a
+
+-- | A map from forms to their potential interpretations.  It can be used
+-- directly to determine all potential dictionary interpretations of a
+-- given form.
+type AnaMap = DAWG (M.Map Rule (S.Set Tag))
+
+-- | Construct an 'AnaMap' from a list of entries.
+mkAnaMap :: [Entry] -> AnaMap
+mkAnaMap xs = D.fromListWith (M.unionWith S.union) $
+    [ ( T.unpack (form x)
+      , M.singleton
+            (between (form x) (base x))
+            (S.singleton (tag x)) )
+    | x <- xs ]
+
+-- | Analyse word.
+anaWord :: AnaMap -> Form -> M.Map Base (S.Set Tag)
+anaWord anaMap x = case D.lookup (T.unpack x) anaMap of
+    Just m  -> M.fromListWith S.union
+        [ (apply rule x, tags)
+        | (rule, tags) <- M.toList m ]
+    Nothing -> M.empty
+
 -- | A map from forms to their possible base forms (there may be many since
 -- the form may be a member of multiple lexemes).
-type BaseMap = D.DAWG (S.Set Rule)
+type BaseMap = DAWG (S.Set Rule)
 
 -- | A map from base forms to all their potential forms.
-type FormMap = D.DAWG (S.Set Rule)
+type FormMap = DAWG (S.Set Rule)
 
 -- | Make a rule map from a list of entries.
-mkRuleMap :: [(T.Text, T.Text)] -> D.DAWG (S.Set Rule)
+mkRuleMap :: [(T.Text, T.Text)] -> DAWG (S.Set Rule)
 mkRuleMap xs = D.fromListWith S.union $
     [ ( T.unpack x
       , S.singleton (between x y) )
@@ -148,100 +169,100 @@ mkBaseMap = mkRuleMap . map ((,) <$> form <*> base)
 mkFormMap :: [Entry] -> FormMap
 mkFormMap = mkRuleMap . map ((,) <$> base <*> form)
 
--- | Reliability information: how did we assign a particular label to
--- a particular word form.
-data RelCode
-    = ByForm    -- ^ Based on labels of other forms within the same lexeme
-    | ByBase    -- ^ Label assigned based on a lemma label  
-    | Exact     -- ^ Label assigned in a direct manner
-    deriving (Eq, Ord, Show, Read)
-
-instance Binary RelCode where
-    put Exact   = put '1'
-    put ByBase  = put '2'
-    put ByForm  = put '3'
-    get = get >>= \x -> return $ case x of
-        '1' -> Exact
-        '2' -> ByBase
-        '3' -> ByForm
-        c   -> error $ "get: invalid RelCode code '" ++ [c] ++ "'"
-
--- | Merge the 'BaseMap' with the dictionary resource which maps forms to sets
--- of labels.  Every label is assigned a 'RelCode' which tells what is the
--- relation between the label and the form. It is a generalized version
--- of the 'merge' function with additional function @f x y y'label@ which
--- can be used to determine the resultant set of labels for the form @x@
--- given ,,similar'' form @y@ and its original label @y'label@.
--- There are three kinds of labels:
--- 'Exact' labels assigned in a direct manner, 'ByBase' labels assigned
--- to all forms which have a base form with a label in the input dictionary,
--- and 'ByForm' labels assigned to all forms which have a related form from the
--- same lexeme with a label in the input dictionary.
-mergeWith
-    :: Ord a
-    => (String -> String -> a -> a)
-    -> BaseMap
-    -> D.DAWG (S.Set a)
-    -> D.DAWG (M.Map a RelCode)
-mergeWith f poli dict0 = D.fromList
-    [ (x, combine x)
-    | x <- keys ]
-  where
-    -- Keys in the output dictionary.
-    keys = join (D.keys poli) (D.keys dict0)
-
-    -- Combining function.
-    combine x = (M.unionsWith max . catMaybes)
-        [ label Exact  <$> D.lookup x dict0 
-        , label ByBase <$> D.lookup x dict1
-        , label ByForm <$> D.lookup x dict2 ]
-
-    label :: Ord a => RelCode -> S.Set a -> M.Map a RelCode
-    label code s = M.fromList [(x, code) | x <- S.toList s]
-
-    -- Extended to all base forms of dict0 keys.
-    dict1 = D.fromListWith mappend
-        [ (lemma, f'Set lemma _form x)
-        | (_form, x) <- D.assocs dict0
-        , lemma <- elemsOn poli _form ]
-
-    -- Extended to all forms of dict0 keys.
-    dict2 = D.fromListWith mappend
-        [ (form', f'Set form' _form x)
-        | (_form, x) <- D.assocs dict0
-        , lemma <- elemsOn poli _form
-        , form' <- elemsOn ilop lemma ]
-
-    -- Inverse poli dictionary.
-    ilop = mkRuleMap
-        [ (base'Text, form'Text)
-        | (form'String, rules) <- D.assocs poli
-        , rule <- S.toList rules
-        , let form'Text = T.pack form'String
-        , let base'Text = apply rule form'Text ]
-    
-    -- Merge to ascending lists.
-    join (x:xs) (y:ys)
-        | x < y     = x : join xs (y:ys)
-        | x > y     = y : join (x:xs) ys
-        | otherwise = x : join xs ys
-    join xs []  = xs
-    join [] ys  = ys
-
-    -- Version of f function working on label sets.
-    f'Set v w = S.fromList . map (f v w) . S.toList
-
--- | A specialized version of the 'mergeWith' function which doesn't
--- change labels in the resultant 'D.DAWG'.
-merge
-    :: Ord a => BaseMap
-    -> D.DAWG (S.Set a)
-    -> D.DAWG (M.Map a RelCode)
-merge = mergeWith $ \_ _ x -> x
-
-elemsOn :: D.DAWG (S.Set Rule) -> String -> [String]
-elemsOn m x = case x `D.lookup` m of
-    Just s  ->
-        [ T.unpack . apply rule . T.pack $ x
-        | rule <- S.toList s ]
-    Nothing -> []
+-- -- | Reliability information: how did we assign a particular label to
+-- -- a particular word form.
+-- data RelCode
+--     = ByForm    -- ^ Based on labels of other forms within the same lexeme
+--     | ByBase    -- ^ Label assigned based on a lemma label  
+--     | Exact     -- ^ Label assigned in a direct manner
+--     deriving (Eq, Ord, Show, Read)
+-- 
+-- instance Binary RelCode where
+--     put Exact   = put '1'
+--     put ByBase  = put '2'
+--     put ByForm  = put '3'
+--     get = get >>= \x -> return $ case x of
+--         '1' -> Exact
+--         '2' -> ByBase
+--         '3' -> ByForm
+--         c   -> error $ "get: invalid RelCode code '" ++ [c] ++ "'"
+-- 
+-- -- | Merge the 'BaseMap' with the dictionary resource which maps forms to sets
+-- -- of labels.  Every label is assigned a 'RelCode' which tells what is the
+-- -- relation between the label and the form. It is a generalized version
+-- -- of the 'merge' function with additional function @f x y y'label@ which
+-- -- can be used to determine the resultant set of labels for the form @x@
+-- -- given ,,similar'' form @y@ and its original label @y'label@.
+-- -- There are three kinds of labels:
+-- -- 'Exact' labels assigned in a direct manner, 'ByBase' labels assigned
+-- -- to all forms which have a base form with a label in the input dictionary,
+-- -- and 'ByForm' labels assigned to all forms which have a related form from the
+-- -- same lexeme with a label in the input dictionary.
+-- mergeWith
+--     :: Ord a
+--     => (String -> String -> a -> a)
+--     -> BaseMap
+--     -> DAWG (S.Set a)
+--     -> DAWG (M.Map a RelCode)
+-- mergeWith f poli dict0 = D.fromList
+--     [ (x, combine x)
+--     | x <- keys ]
+--   where
+--     -- Keys in the output dictionary.
+--     keys = join (D.keys poli) (D.keys dict0)
+-- 
+--     -- Combining function.
+--     combine x = (M.unionsWith max . catMaybes)
+--         [ label Exact  <$> D.lookup x dict0 
+--         , label ByBase <$> D.lookup x dict1
+--         , label ByForm <$> D.lookup x dict2 ]
+-- 
+--     label :: Ord a => RelCode -> S.Set a -> M.Map a RelCode
+--     label code s = M.fromList [(x, code) | x <- S.toList s]
+-- 
+--     -- Extended to all base forms of dict0 keys.
+--     dict1 = D.fromListWith mappend
+--         [ (lemma, f'Set lemma _form x)
+--         | (_form, x) <- D.assocs dict0
+--         , lemma <- elemsOn poli _form ]
+-- 
+--     -- Extended to all forms of dict0 keys.
+--     dict2 = D.fromListWith mappend
+--         [ (form', f'Set form' _form x)
+--         | (_form, x) <- D.assocs dict0
+--         , lemma <- elemsOn poli _form
+--         , form' <- elemsOn ilop lemma ]
+-- 
+--     -- Inverse poli dictionary.
+--     ilop = mkRuleMap
+--         [ (base'Text, form'Text)
+--         | (form'String, rules) <- D.assocs poli
+--         , rule <- S.toList rules
+--         , let form'Text = T.pack form'String
+--         , let base'Text = apply rule form'Text ]
+--     
+--     -- Merge to ascending lists.
+--     join (x:xs) (y:ys)
+--         | x < y     = x : join xs (y:ys)
+--         | x > y     = y : join (x:xs) ys
+--         | otherwise = x : join xs ys
+--     join xs []  = xs
+--     join [] ys  = ys
+-- 
+--     -- Version of f function working on label sets.
+--     f'Set v w = S.fromList . map (f v w) . S.toList
+-- 
+-- -- | A specialized version of the 'mergeWith' function which doesn't
+-- -- change labels in the resultant 'DAWG'.
+-- merge
+--     :: Ord a => BaseMap
+--     -> DAWG (S.Set a)
+--     -> DAWG (M.Map a RelCode)
+-- merge = mergeWith $ \_ _ x -> x
+-- 
+-- elemsOn :: DAWG (S.Set Rule) -> String -> [String]
+-- elemsOn m x = case x `D.lookup` m of
+--     Just s  ->
+--         [ T.unpack . apply rule . T.pack $ x
+--         | rule <- S.toList s ]
+--     Nothing -> []
