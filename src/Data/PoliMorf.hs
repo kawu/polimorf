@@ -32,7 +32,7 @@ import qualified Data.Text as T
 import qualified Data.Text.Lazy as L
 import qualified Data.Text.Lazy.IO as L
 
--- | A form.
+-- | A word form.
 type Form = T.Text
 
 -- | A base form.
@@ -47,7 +47,8 @@ type MSD  = T.Text
 -- | A morphosyntactic tag. (Tag = POS + MSD)
 type Tag  = T.Text
 
--- | A semantic category.
+-- | A semantic category.  It will be set to "" when there is
+-- no category assigned to a particular PoliMorf entry.
 type Cat  = T.Text
 
 -- | An entry from the PoliMorf dictionary.
@@ -90,5 +91,7 @@ parsePoliMorf = map parsePoliRow . L.lines
 -- | Get an entry pair from a PoliMorf row.
 parsePoliRow :: L.Text -> Entry
 parsePoliRow row = case map L.toStrict (L.split (=='\t') row) of
-    [_form, _base, _tag, _cat] -> Entry _form _base _tag _cat
+    _form : _base : _tag : rest -> Entry _form _base _tag $ case rest of
+        []       -> ""
+        (_cat:_) -> _cat
     _   -> error $ "parsePoliRow: invalid row \"" ++ L.unpack row ++ "\""
