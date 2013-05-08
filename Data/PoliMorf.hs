@@ -4,9 +4,7 @@
 {-# LANGUAGE RecordWildCards #-}
 
 -- | The module provides functionality for manipulating PoliMorf, the
--- morphological dictionary for Polish. Apart from IO utilities there
--- is a 'merge' function which can be used to merge the PoliMorf with
--- another dictionary resources.
+-- morphological dictionary for Polish.
 
 module Data.PoliMorf
 ( 
